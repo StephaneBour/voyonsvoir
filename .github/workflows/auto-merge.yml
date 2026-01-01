@@ -8,6 +8,7 @@ on:
 permissions:
   checks: read
   contents: write
+  issues: write
   pull-requests: write
 
 jobs:
@@ -34,9 +35,39 @@ jobs:
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
             const requiredBaseChecks = ["gitleaks", "trivy", "clamav"]
             const requiredSameRepoChecks = ["codeql", "gitleaks", "trivy", "clamav"]
+            const conflictMarker = "<!-- automerge-conflict -->"
 
             async function getPr(number) {
               return (await github.rest.pulls.get({ owner, repo, pull_number: number })).data
+            }
+
+            async function hasConflictComment(number) {
+              const { data } = await github.rest.issues.listComments({
+                owner,
+                repo,
+                issue_number: number,
+                per_page: 100
+              })
+              return data.some((comment) => comment.body?.includes(conflictMarker))
+            }
+
+            async function postConflictComment(pr) {
+              if (await hasConflictComment(pr.number)) {
+                console.log(`Conflict comment already exists for PR #${pr.number}`)
+                return
+              }
+              const body = [
+                conflictMarker,
+                "FR: Cette PR a des conflits avec la branche cible. Merci de les resoudre puis de mettre a jour la PR.",
+                "EN: This PR has merge conflicts with the base branch. Please resolve them and update the PR."
+              ].join("\n")
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr.number,
+                body
+              })
+              console.log(`Posted conflict comment on PR #${pr.number}`)
             }
 
             async function checksPassed(sha, requiredChecks) {
@@ -108,6 +139,9 @@ jobs:
               const pr = await waitForMergeable(number)
               if (!pr || pr.merged) return
               if (pr.mergeable !== true || pr.mergeable_state !== "clean") {
+                if (pr.mergeable_state === "dirty") {
+                  await postConflictComment(pr)
+                }
                 console.log(`PR #${number} not mergeable yet`)
                 return
               }
